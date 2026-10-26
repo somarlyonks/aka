@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>{{TITLE}}</title>
+    <link rel="icon" href="/ji.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body class="page-auth">
+    {{>HEADER}}
+    <main class="hero shell">
+        <h1><code>{{WORD}}</code></h1>
+        <section id="auth-panel">
+            <p class="muted">This alias is private. Enter its secret to open it.</p>
+            <p class="error" id="auth-error" role="alert" hidden></p>
+            <form id="auth-form">
+                <label for="secret">Secret</label>
+                <input id="secret" type="password" autocomplete="off" required autofocus>
+                <button type="submit">Open alias</button>
+            </form>
+            <noscript>
+                <p class="muted">JavaScript is required to unlock in the browser. Send
+                    <code>Authorization: Bearer &lt;secret&gt;</code> instead.
+                </p>
+            </noscript>
+        </section>
+        <p><a href="/" target="_self">Back to aka</a></p>
+    </main>
+    <script type="module" src="/auth.js"></script>
+    {{>FOOTER}}
+</body>
+
+</html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>{{TITLE}}</title>
+    <link rel="icon" href="/ji.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body class="page-config">
+    {{>HEADER}}
+    <main class="hero shell">
+        <h1>
+            <span {{CHOSEN_HIDDEN}}>Create <code>{{WORD}}</code></span>
+            <span {{GENERATED_HIDDEN}}>Create a generated alias</span>
+        </h1>
+        <p class="error" role="alert" {{ERROR_HIDDEN}}>{{ERROR_TEXT}}</p>
+        <form id="create-form" method="post" action="{{ACTION}}">
+            <label for="content">Content</label>
+            <textarea id="content" name="content" required>{{CONTENT}}</textarea>
+            <label for="secret">Secret <span class="muted">(optional)</span></label>
+            <input id="secret" name="secret" type="password" autocomplete="off" minlength="2">
+            <p class="muted">At least 2 characters. A secret makes the word private.</p>
+            <label for="max-age">Lifetime (seconds)</label>
+            <input id="max-age" name="max-age" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+                maxlength="16" placeholder="{{DEFAULT_MAX_AGE}}" value="{{MAX_AGE}}">
+            <p class="muted">Whole seconds only. Default {{DEFAULT_MAX_AGE}} (7 days). Use 0 for a one-time alias.
+                Maximum {{MAX_MAX_AGE}} (30 days).</p>
+            <button type="submit">Create alias</button>
+        </form>
+    </main>
+    {{>FOOTER}}
+</body>
+
+</html>
