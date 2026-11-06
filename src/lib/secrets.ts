@@ -1,19 +1,11 @@
-let cachedKey: {salt: string, key: Promise<CryptoKey>} | null = null
-
 function hmacKey (salt: string): Promise<CryptoKey> {
-    if (cachedKey?.salt !== salt) {
-        cachedKey = {
-            salt,
-            key: crypto.subtle.importKey(
-                'raw',
-                new TextEncoder().encode(salt),
-                {name: 'HMAC', hash: 'SHA-256'},
-                false,
-                ['sign'],
-            ),
-        }
-    }
-    return cachedKey.key
+    return crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(salt),
+        {name: 'HMAC', hash: 'SHA-256'},
+        false,
+        ['sign'],
+    )
 }
 
 function toHex (buffer: ArrayBuffer): string {
