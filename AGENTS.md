@@ -43,7 +43,7 @@ A bare `?0` query is shorthand for `max-age=0`; an explicit `max-age` wins when 
 
 The free-word config page includes a `max-age` seconds input (default `604800`, maximum `2592000`, `0` for one-time). The form posts `application/x-www-form-urlencoded` fields `content`, `secret`, and `max-age`; a blank field uses the default. Reads of an existing alias ignore `max-age`; it never changes an existing alias.
 
-Especially, for one-time alias, it does not expire if never successfully visited. So we need a retention schedule prune those one-time alias created 30 days ago.
+An unconsumed one-time alias does not expire, so retention removes it 30 days after creation (see [Expiry and one-time semantics](#expiry-and-one-time-semantics)).
 
 ### Creation responses
 
@@ -147,6 +147,7 @@ Delete a private alias:
 - Failed auth, config page views, `HEAD`/`OPTIONS`, and error responses do not consume a one-time alias.
 - Prefetchers/crawlers can consume a public one-time alias; do not rely on one-time links for sensitive public content.
 - One-time consumption cannot be defeated by edge or browser caching.
+- A scheduled retention run executes daily. It removes aliases whose lifetime has ended even when they were never read, and one-time aliases that were never consumed once they are 30 days old. Built-in aliases (`expires_at = NULL`) are never removed.
 
 ## Cache policy
 
@@ -235,8 +236,8 @@ When creating words, naming it with `-` means let the system generate the words.
 
 ```
 src/
-  index.ts                  Hono app, middleware, root index/health, route wiring
-  types.ts                  Env bindings and AliasRow
+  index.ts                  Hono app, middleware, root index/health, route wiring, scheduled retention
+  types.ts                  Env bindings
   routes/
     pages.ts                GET /:word (config, public resolve, private resolve)
     submit.ts               GET /:word/:content, GET /-/*, POST /:word (JSON/form; `-` generates)
@@ -248,7 +249,7 @@ src/
     content-crypto.ts       AES-GCM content encryption/decryption
     html.ts                 static-template loading, escaping, placeholder rendering
     json.ts                 JSON object body parsing for API routes
-    lifetime.ts             max-age parsing, expiry, immutable TTL
+    lifetime.ts             max-age parsing, expiry, immutable TTL, retention window
     respond.ts              HTML/JSON/text/redirect responses and security/cache headers
     secrets.ts              HMAC hash and timing-safe verification
     words.ts                validation, normalization, generated-word selection
@@ -289,7 +290,7 @@ LICENSE
 ## Deployment
 
 - `wrangler.jsonc` uses the default environment for local development and a separate `prod` environment for deployment, each with its own D1 binding. `npm run dev`, the test harness, and Playwright use the default environment with a local D1 database; `npm run deploy` targets `prod`. There is no remote dev environment.
-- The `RATE_LIMITER` binding is declared in both the top level and `prod`, because `ratelimits` is not inherited by named environments. Local development and tests simulate it, so the Worker-level 429 path is covered without a remote deployment.
+- The `RATE_LIMITER` binding is declared in both the top level and `prod`, because `ratelimits` is not inherited by named environments. The daily retention Cron Trigger (`0 3 * * *`) is declared at the top level and is inherited by `prod`. Local development and tests simulate the limiter, so the Worker-level 429 path is covered without a remote deployment.
 - Secrets: `SECRET_SALT` (required, stable) via `wrangler secret put SECRET_SALT --env prod`; `.dev.vars` locally. Disable Workers Logs / request observability in the dashboard.
 - Apply migrations locally via `npm run db:migrate:local` and for production via `npm run db:migrate:prod`.
 - Each migration file contains exactly one SQL statement, so tests can execute the files directly without parsing them.

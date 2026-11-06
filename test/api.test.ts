@@ -1,6 +1,13 @@
-import {SELF, env} from 'cloudflare:test'
+import {
+    SELF,
+    createExecutionContext,
+    createScheduledController,
+    env,
+    waitOnExecutionContext,
+} from 'cloudflare:test'
 import {describe, expect, it} from 'vitest'
 import {insertAlias} from '../src/db/repo'
+import worker from '../src/index'
 import {decryptContent} from '../src/lib/content-crypto'
 import {DEFAULT_MAX_AGE, MAX_MAX_AGE} from '../src/lib/lifetime'
 
@@ -71,6 +78,16 @@ async function aliasRow (word: string): Promise<{
 
 function expectNoReferrer (response: Response): void {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+}
+
+async function runScheduledRetention (): Promise<void> {
+    const controller = createScheduledController({
+        scheduledTime: Date.now(),
+        cron: '0 3 * * *',
+    })
+    const context = createExecutionContext()
+    await worker.scheduled(controller, env, context)
+    await waitOnExecutionContext(context)
 }
 
 // HTML rendering is covered by the Playwright smoke tests in e2e/.
@@ -1312,6 +1329,70 @@ describe('one-time request methods', () => {
 
         const resolved = await get('/head-once')
         expect(await resolved.text()).toBe('hello')
+    })
+})
+
+describe('retention', () => {
+    const DAY = 24 * 60 * 60
+
+    async function storeAlias (
+        word: string,
+        createdAt: number,
+        expiresAt: number,
+    ): Promise<void> {
+        await env.DB.prepare(
+            'INSERT INTO aliases (word, content, secret, created_at, expires_at) VALUES (?, ?, NULL, ?, ?)',
+        )
+            .bind(word, 'retention-content', createdAt, expiresAt)
+            .run()
+    }
+
+    it('prunes expired aliases and keeps live and built-in ones', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await storeAlias('retention-expired', now - 120, now - 1)
+        await storeAlias('retention-live', now, now + 60)
+        await storeAlias('retention-unused-one-time', now, 0)
+
+        await runScheduledRetention()
+
+        expect(await aliasRow('retention-expired')).toBeNull()
+        expect(await aliasRow('retention-live')).not.toBeNull()
+        expect(await aliasRow('retention-unused-one-time')).not.toBeNull()
+        expect(await aliasRow('diamond-sutra')).not.toBeNull()
+        expect(await aliasRow('terms-of-use')).not.toBeNull()
+    })
+
+    it('prunes one-time aliases that were never consumed after 30 days', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await storeAlias('retention-old-one-time', now - MAX_MAX_AGE - DAY, 0)
+        await storeAlias('retention-cutting-one-time', now - MAX_MAX_AGE, 0)
+        await storeAlias('retention-young-one-time', now - MAX_MAX_AGE + DAY, 0)
+
+        await runScheduledRetention()
+
+        expect(await aliasRow('retention-old-one-time')).toBeNull()
+        expect(await aliasRow('retention-cutting-one-time')).toBeNull()
+        expect(await aliasRow('retention-young-one-time')).not.toBeNull()
+    })
+
+    it('drains a backlog larger than one batch', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await env.DB.prepare(
+            `WITH RECURSIVE batch(i) AS (
+                SELECT 1 UNION ALL SELECT i + 1 FROM batch WHERE i < 501
+            )
+            INSERT INTO aliases (word, content, secret, created_at, expires_at)
+            SELECT 'retention-batch-' || i, 'x', NULL, ?, 0 FROM batch`,
+        )
+            .bind(now - MAX_MAX_AGE - DAY)
+            .run()
+
+        await runScheduledRetention()
+
+        const remaining = await env.DB.prepare(
+            'SELECT COUNT(*) AS count FROM aliases WHERE word LIKE \'retention-batch-%\'',
+        ).first<{count: number}>()
+        expect(remaining?.count).toBe(0)
     })
 })
 

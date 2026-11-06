@@ -1,7 +1,9 @@
 import {Hono} from 'hono'
 import type {Env} from './types'
+import {pruneAliases} from './db/repo'
 import {prefersJson} from './lib/accept'
 import {renderIndexPage} from './lib/html'
+import {retentionWindow} from './lib/lifetime'
 import {isRateLimited, RETRY_AFTER_SECONDS} from './lib/rate-limit'
 import {errorPage, htmlPage, rateLimitedPage, redirectPage} from './lib/respond'
 import {showWord} from './routes/pages'
@@ -47,4 +49,9 @@ app.notFound(c => errorPage(c, 404))
 
 app.onError((_error, c) => errorPage(c, 500))
 
-export default app
+export default {
+    fetch: app.fetch,
+    scheduled: (_controller, env, ctx) => {
+        ctx.waitUntil(pruneAliases(env.DB, retentionWindow()))
+    },
+} satisfies ExportedHandler<Env>

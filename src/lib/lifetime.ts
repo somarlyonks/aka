@@ -45,6 +45,16 @@ export function isExpired (expiresAt: number | null, now = nowSeconds()): boolea
     return expiresAt !== null && expiresAt !== 0 && expiresAt <= now
 }
 
+/**
+ * Expired aliases go at `now`; unconsumed one-time aliases are kept for the
+ * longest normal lifetime.
+ */
+export function retentionWindow (
+    now = nowSeconds(),
+): {now: number, oneTimeCutoff: number} {
+    return {now, oneTimeCutoff: now - MAX_MAX_AGE}
+}
+
 export function immutableTtl (
     expiresAt: number | null,
     now = nowSeconds(),
