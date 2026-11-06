@@ -31,7 +31,7 @@ DELETE /:word                       API delete, secret in the JSON body
 - `0` -> one-time alias
 - parsing error, malformed, or overflow -> `422`
 - maximum allowed value: `2592000` seconds (30 days)
-- already existing word -> `409`
+- word held by a live alias -> `409`; an alias past its lifetime is removed first, so its word can be claimed again
 
 A bare `?0` query is shorthand for `max-age=0`; an explicit `max-age` wins when both are given. Other bare queries are ignored.
 
@@ -68,7 +68,8 @@ GET /one-shot/some%20text?max-age=0
 
 - `content` is everything after `/:word/`, percent-decoded once; URLs containing `/` need no encoding, but a content URL's own query string must encode `?` as `%3F` and `&` as `%26`.
 - Free word -> public alias, then `303` (normal) or `201` confirmation.
-- Existing word -> `409`, checked before content and `max-age` validation.
+- Word held by a live alias -> `409`, checked before content and `max-age` validation.
+- Word whose alias is past its lifetime -> the expired alias is removed and the create continues as if the word were free.
 
 ### `GET /:word` — free word
 
@@ -126,7 +127,7 @@ POST only creates an alias and accepts `Content-Type: application/json` (returns
 - `secret` is optional; a non-empty string makes the alias private.
 - `maxAge` is optional; whole seconds only, default `604800` (7 days), maximum `2592000` (30 days), `0` one-time.
 - Success -> `201 Created` JSON body `{ "word", "url", "oneTime", "private" }` with `Location: /:word`. It never redirects.
-- Word already exists -> `409` (checked after body parsing, before field validation); invalid JSON/body -> `400`; invalid word, content, secret, or `maxAge` -> `422`. Errors are JSON in the shape `{ "error": { "code": "...", "message": "..." } }`. Secrets cannot override and cannot change the lifetime.
+- Word held by a live alias -> `409` (checked after body parsing, before field validation, and an alias past its lifetime is removed first); invalid JSON/body -> `400`; invalid word, content, secret, or `maxAge` -> `422`. Errors are JSON in the shape `{ "error": { "code": "...", "message": "..." } }`. Secrets cannot override and cannot change the lifetime.
 
 ### `DELETE /:word`
 
@@ -140,6 +141,8 @@ Delete a private alias:
 ## Expiry and one-time semantics
 
 - An alias past its lifetime -> `410 Gone` and is removed. This check runs before rendering a public resolve, a config page, or a private resolve.
+- Creation treats an expired word as free: the expired row is removed as part of the claim, so an expired word can be claimed again immediately. Validation failures never remove the expired row.
+- Expiry deletes only remove a row that is still expired, so a fresh alias created for the same word is never removed by a stale read, delete, or claim.
 - A one-time alias is consumed on its first successful view:
   - public: exactly one request receives the content
   - private: verify the secret, then consume; only the request that consumes the alias receives the content

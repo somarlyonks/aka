@@ -6,7 +6,7 @@ import {
     waitOnExecutionContext,
 } from 'cloudflare:test'
 import {describe, expect, it} from 'vitest'
-import {insertAlias} from '../src/db/repo'
+import {insertAlias, reclaimExpiredAlias} from '../src/db/repo'
 import worker from '../src/index'
 import {decryptContent} from '../src/lib/content-crypto'
 import {DEFAULT_MAX_AGE, MAX_MAX_AGE} from '../src/lib/lifetime'
@@ -74,6 +74,12 @@ async function aliasRow (word: string): Promise<{
     )
         .bind(word)
         .first()
+}
+
+async function expireAlias (word: string): Promise<void> {
+    await env.DB.prepare('UPDATE aliases SET expires_at = ? WHERE word = ?')
+        .bind(Math.floor(Date.now() / 1000) - 1, word)
+        .run()
 }
 
 function expectNoReferrer (response: Response): void {
@@ -490,6 +496,56 @@ describe('aka worker', () => {
             body: '{',
         })
         expect(malformedBody.status).toBe(400)
+    })
+
+    it('reclaims a word whose alias has expired', async () => {
+        expect((await get('/reclaim/old')).status).toBe(303)
+        await expireAlias('reclaim')
+
+        const path = await get('/reclaim/new')
+        expect(path.status).toBe(303)
+        expect(path.headers.get('location')).toBe('/reclaim')
+        expect(await (await get('/reclaim')).text()).toBe('new')
+
+        expect((await postJson('/reclaim-post', {content: 'first'})).status).toBe(201)
+        await expireAlias('reclaim-post')
+        const jsonCreated = await postJson('/reclaim-post', {content: 'second'})
+        expect(jsonCreated.status).toBe(201)
+        expect(await jsonCreated.json()).toMatchObject({word: 'reclaim-post'})
+        expect(await (await get('/reclaim-post')).text()).toBe('second')
+
+        expectHtml(await postForm('/reclaim-form', {content: 'first'}), 201)
+        await expireAlias('reclaim-form')
+        expectHtml(await postForm('/reclaim-form', {content: 'second'}), 201)
+        expect(await (await get('/reclaim-form')).text()).toBe('second')
+    })
+
+    it('keeps words held by live one-time and built-in aliases taken', async () => {
+        expect((await get('/once-held/hello?max-age=0')).status).toBe(201)
+
+        expect((await get('/once-held/again')).status).toBe(409)
+        expect((await postJson('/once-held', {content: 'again'})).status).toBe(409)
+
+        expect((await get('/diamond-sutra/again')).status).toBe(409)
+        expect((await postJson('/diamond-sutra', {content: 'again'})).status).toBe(409)
+    })
+
+    it('leaves an expired alias in place when validation fails', async () => {
+        expect((await get('/reclaim-stale/old')).status).toBe(303)
+        await expireAlias('reclaim-stale')
+
+        expect((await get('/reclaim-stale/')).status).toBe(422)
+        expect((await get('/reclaim-stale/old?max-age=3d')).status).toBe(422)
+        expect((await postJson('/reclaim-stale', {content: 42})).status).toBe(422)
+        expect(await aliasRow('reclaim-stale')).not.toBeNull()
+    })
+
+    it('never deletes a live alias with a stale expiry check', async () => {
+        expect((await get('/stale-guard/live')).status).toBe(303)
+
+        const staleNow = Math.floor(Date.now() / 1000) + 86400
+        expect(await reclaimExpiredAlias(env.DB, 'stale-guard', staleNow)).toBe(false)
+        expect(await aliasRow('stale-guard')).not.toBeNull()
     })
 
     it('creates a private alias and authenticates GET with Bearer', async () => {

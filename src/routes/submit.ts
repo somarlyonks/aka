@@ -1,4 +1,4 @@
-import {aliasExists, insertAlias} from '../db/repo'
+import {insertAlias, liveAliasExists, reclaimExpiredAlias} from '../db/repo'
 import {contentAfterFirstSegment, isValidContent, isValidSecret, MAX_SECRET_CHARS, MIN_SECRET_CHARS} from '../lib/content'
 import {encryptContent} from '../lib/content-crypto'
 import {renderConfigPage, renderCreatedPage} from '../lib/html'
@@ -55,7 +55,9 @@ export async function pathCreate (c: AppContext): Promise<Response> {
     if (param.kind === 'invalid') return invalidWordPage(c)
 
     if (param.kind === 'chosen') {
-        if (await aliasExists(c.env.DB, param.word)) return conflictResponse(c, 'path', param.word)
+        if (await liveAliasExists(c.env.DB, param.word, nowSeconds())) {
+            return conflictResponse(c, 'path', param.word)
+        }
     }
 
     const chosen = param.kind === 'chosen' ? param.word : undefined
@@ -80,7 +82,7 @@ export async function submitWord (c: AppContext): Promise<Response> {
     const body = await readSubmitBody(c, channel)
     if (!body.ok) return body.response
 
-    if (chosen !== undefined && await aliasExists(c.env.DB, chosen)) {
+    if (chosen !== undefined && await liveAliasExists(c.env.DB, chosen, nowSeconds())) {
         return conflictResponse(c, channel, chosen)
     }
 
@@ -245,7 +247,7 @@ async function createFromDraft (c: AppContext, channel: Channel, chosen: string 
 
         async function storeAlias (c: AppContext, word: string, draft: Draft): Promise<boolean> {
             const now = nowSeconds()
-            return insertAlias(c.env.DB, {
+            const alias = {
                 word,
                 content: await encryptContent(
                     {salt: c.env.SECRET_SALT, word, secret: draft.secret},
@@ -256,7 +258,11 @@ async function createFromDraft (c: AppContext, channel: Channel, chosen: string 
                     : await hashSecret(c.env.SECRET_SALT, word, draft.secret),
                 createdAt: now,
                 expiresAt: expiresAtFor(draft.maxAge, now),
-            })
+            }
+            if (await insertAlias(c.env.DB, alias)) return true
+            // The row still holding this word may have expired meanwhile.
+            if (!(await reclaimExpiredAlias(c.env.DB, word, now))) return false
+            return insertAlias(c.env.DB, alias)
         }
     }
 

@@ -23,12 +23,38 @@ export async function getAlias (db: D1Database, word: string): Promise<AliasRow 
         .first<AliasRow>()
 }
 
-export async function aliasExists (db: D1Database, word: string): Promise<boolean> {
+/**
+ * True while `word` is held by an alias that has not passed its lifetime, so
+ * an expired row does not block a new claim. One-time aliases (`expires_at = 0`)
+ * and built-ins (`NULL`) never expire on their own.
+ */
+export async function liveAliasExists (
+    db: D1Database,
+    word: string,
+    now: number,
+): Promise<boolean> {
     const row = await db
-        .prepare('SELECT 1 AS present FROM aliases WHERE word = ?')
-        .bind(word)
+        .prepare('SELECT 1 AS present FROM aliases WHERE word = ? AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)')
+        .bind(word, now)
         .first<{present: number}>()
     return row?.present === 1
+}
+
+/**
+ * Deletes `word` only while its alias is past its lifetime (the complement of
+ * `liveAliasExists`), so a concurrent creator's fresh row is never removed.
+ * Returns whether a row was deleted.
+ */
+export async function reclaimExpiredAlias (
+    db: D1Database,
+    word: string,
+    now: number,
+): Promise<boolean> {
+    const result = await db
+        .prepare('DELETE FROM aliases WHERE word = ? AND expires_at > 0 AND expires_at <= ?')
+        .bind(word, now)
+        .run()
+    return (result.meta.changes ?? 0) > 0
 }
 
 export async function insertAlias (db: D1Database, alias: NewAlias): Promise<boolean> {
