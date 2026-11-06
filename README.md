@@ -7,6 +7,7 @@ A tiny Cloudflare Worker that stores a long string under a short word. Built wit
 - public alias, quick write/read
 - private alias auth with `Authorization: Bearer`
 - burn after read when `max-age=0`
+- daily retention: expired aliases and unconsumed one-time aliases older than 30 days are deleted
 
 ## Quick start
 
@@ -109,6 +110,8 @@ npm run deploy
 The schema and initial built-in aliases live in `src/db/migrations/`, with one SQL statement per file. This project is treated as pre-release: edit those files and recreate the D1 database for schema changes. Built-in content updates can be applied with a normal data migration.
 
 Keep `SECRET_SALT` stable: it keys the secret hashes and every user-created content key, so changing it invalidates existing private secrets and makes encrypted content undecryptable. The plaintext built-in rows are unaffected. Request logging is disabled in `wrangler.jsonc`.
+
+A Cron Trigger runs the retention job daily at 03:00 UTC. It deletes aliases whose lifetime has ended and one-time aliases that were never consumed 30 days after creation; built-in aliases never expire and are left untouched. Local development does not fire Cron Triggers automatically: with `wrangler dev` running, trigger the handler with `curl 'http://localhost:8787/cdn-cgi/local/scheduled?cron=0+3+*+*+*'`.
 
 ## License
 

@@ -27,8 +27,6 @@ const IV_BYTES = 12
 const KEY_INFO = 'aka-content-v1'
 const SECRET_KEY_INFO = 'aka-content-v1:secret'
 
-let cachedPublicKey: {salt: string, key: Promise<CryptoKey>} | null = null
-
 function deriveKey (
     input: Uint8Array,
     salt: Uint8Array,
@@ -52,36 +50,26 @@ function deriveKey (
         )
 }
 
-function publicContentKey (salt: string): Promise<CryptoKey> {
-    if (cachedPublicKey?.salt !== salt) {
-        cachedPublicKey = {
-            salt,
-            key: deriveKey(
-                new TextEncoder().encode(salt),
-                new Uint8Array(0),
-                KEY_INFO,
-            ),
-        }
-    }
-    return cachedPublicKey.key
-}
-
-function secretContentKey (
-    context: ContentContext,
-    secret: string,
-): Promise<CryptoKey> {
-    const encoder = new TextEncoder()
-    return deriveKey(
-        encoder.encode(`${context.salt}\0${secret}`),
-        encoder.encode(context.word),
-        SECRET_KEY_INFO,
-    )
-}
-
 function contentKey (context: ContentContext): Promise<CryptoKey> {
     return context.secret === null
         ? publicContentKey(context.salt)
         : secretContentKey(context, context.secret)
+
+    function publicContentKey (salt: string): Promise<CryptoKey> {
+        return deriveKey(new TextEncoder().encode(salt), new Uint8Array(0), KEY_INFO)
+    }
+
+    function secretContentKey (
+        context: ContentContext,
+        secret: string,
+    ): Promise<CryptoKey> {
+        const encoder = new TextEncoder()
+        return deriveKey(
+            encoder.encode(`${context.salt}\0${secret}`),
+            encoder.encode(context.word),
+            SECRET_KEY_INFO,
+        )
+    }
 }
 
 function toBase64 (bytes: Uint8Array): string {

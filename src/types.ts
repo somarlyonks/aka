@@ -16,11 +16,3 @@ declare global {
         }
     }
 }
-
-export interface AliasRow {
-    word: string
-    content: string
-    secret: string | null
-    created_at: number
-    expires_at: number | null
-}

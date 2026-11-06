@@ -1,6 +1,13 @@
-import {SELF, env} from 'cloudflare:test'
+import {
+    SELF,
+    createExecutionContext,
+    createScheduledController,
+    env,
+    waitOnExecutionContext,
+} from 'cloudflare:test'
 import {describe, expect, it} from 'vitest'
-import {insertAlias} from '../src/db/repo'
+import {insertAlias, reclaimExpiredAlias} from '../src/db/repo'
+import worker from '../src/index'
 import {decryptContent} from '../src/lib/content-crypto'
 import {DEFAULT_MAX_AGE, MAX_MAX_AGE} from '../src/lib/lifetime'
 
@@ -69,8 +76,24 @@ async function aliasRow (word: string): Promise<{
         .first()
 }
 
+async function expireAlias (word: string): Promise<void> {
+    await env.DB.prepare('UPDATE aliases SET expires_at = ? WHERE word = ?')
+        .bind(Math.floor(Date.now() / 1000) - 1, word)
+        .run()
+}
+
 function expectNoReferrer (response: Response): void {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+}
+
+async function runScheduledRetention (): Promise<void> {
+    const controller = createScheduledController({
+        scheduledTime: Date.now(),
+        cron: '0 3 * * *',
+    })
+    const context = createExecutionContext()
+    await worker.scheduled(controller, env, context)
+    await waitOnExecutionContext(context)
 }
 
 // HTML rendering is covered by the Playwright smoke tests in e2e/.
@@ -473,6 +496,56 @@ describe('aka worker', () => {
             body: '{',
         })
         expect(malformedBody.status).toBe(400)
+    })
+
+    it('reclaims a word whose alias has expired', async () => {
+        expect((await get('/reclaim/old')).status).toBe(303)
+        await expireAlias('reclaim')
+
+        const path = await get('/reclaim/new')
+        expect(path.status).toBe(303)
+        expect(path.headers.get('location')).toBe('/reclaim')
+        expect(await (await get('/reclaim')).text()).toBe('new')
+
+        expect((await postJson('/reclaim-post', {content: 'first'})).status).toBe(201)
+        await expireAlias('reclaim-post')
+        const jsonCreated = await postJson('/reclaim-post', {content: 'second'})
+        expect(jsonCreated.status).toBe(201)
+        expect(await jsonCreated.json()).toMatchObject({word: 'reclaim-post'})
+        expect(await (await get('/reclaim-post')).text()).toBe('second')
+
+        expectHtml(await postForm('/reclaim-form', {content: 'first'}), 201)
+        await expireAlias('reclaim-form')
+        expectHtml(await postForm('/reclaim-form', {content: 'second'}), 201)
+        expect(await (await get('/reclaim-form')).text()).toBe('second')
+    })
+
+    it('keeps words held by live one-time and built-in aliases taken', async () => {
+        expect((await get('/once-held/hello?max-age=0')).status).toBe(201)
+
+        expect((await get('/once-held/again')).status).toBe(409)
+        expect((await postJson('/once-held', {content: 'again'})).status).toBe(409)
+
+        expect((await get('/diamond-sutra/again')).status).toBe(409)
+        expect((await postJson('/diamond-sutra', {content: 'again'})).status).toBe(409)
+    })
+
+    it('leaves an expired alias in place when validation fails', async () => {
+        expect((await get('/reclaim-stale/old')).status).toBe(303)
+        await expireAlias('reclaim-stale')
+
+        expect((await get('/reclaim-stale/')).status).toBe(422)
+        expect((await get('/reclaim-stale/old?max-age=3d')).status).toBe(422)
+        expect((await postJson('/reclaim-stale', {content: 42})).status).toBe(422)
+        expect(await aliasRow('reclaim-stale')).not.toBeNull()
+    })
+
+    it('never deletes a live alias with a stale expiry check', async () => {
+        expect((await get('/stale-guard/live')).status).toBe(303)
+
+        const staleNow = Math.floor(Date.now() / 1000) + 86400
+        expect(await reclaimExpiredAlias(env.DB, 'stale-guard', staleNow)).toBe(false)
+        expect(await aliasRow('stale-guard')).not.toBeNull()
     })
 
     it('creates a private alias and authenticates GET with Bearer', async () => {
@@ -1312,6 +1385,70 @@ describe('one-time request methods', () => {
 
         const resolved = await get('/head-once')
         expect(await resolved.text()).toBe('hello')
+    })
+})
+
+describe('retention', () => {
+    const DAY = 24 * 60 * 60
+
+    async function storeAlias (
+        word: string,
+        createdAt: number,
+        expiresAt: number,
+    ): Promise<void> {
+        await env.DB.prepare(
+            'INSERT INTO aliases (word, content, secret, created_at, expires_at) VALUES (?, ?, NULL, ?, ?)',
+        )
+            .bind(word, 'retention-content', createdAt, expiresAt)
+            .run()
+    }
+
+    it('prunes expired aliases and keeps live and built-in ones', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await storeAlias('retention-expired', now - 120, now - 1)
+        await storeAlias('retention-live', now, now + 60)
+        await storeAlias('retention-unused-one-time', now, 0)
+
+        await runScheduledRetention()
+
+        expect(await aliasRow('retention-expired')).toBeNull()
+        expect(await aliasRow('retention-live')).not.toBeNull()
+        expect(await aliasRow('retention-unused-one-time')).not.toBeNull()
+        expect(await aliasRow('diamond-sutra')).not.toBeNull()
+        expect(await aliasRow('terms-of-use')).not.toBeNull()
+    })
+
+    it('prunes one-time aliases that were never consumed after 30 days', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await storeAlias('retention-old-one-time', now - MAX_MAX_AGE - DAY, 0)
+        await storeAlias('retention-cutting-one-time', now - MAX_MAX_AGE, 0)
+        await storeAlias('retention-young-one-time', now - MAX_MAX_AGE + DAY, 0)
+
+        await runScheduledRetention()
+
+        expect(await aliasRow('retention-old-one-time')).toBeNull()
+        expect(await aliasRow('retention-cutting-one-time')).toBeNull()
+        expect(await aliasRow('retention-young-one-time')).not.toBeNull()
+    })
+
+    it('drains a backlog larger than one batch', async () => {
+        const now = Math.floor(Date.now() / 1000)
+        await env.DB.prepare(
+            `WITH RECURSIVE batch(i) AS (
+                SELECT 1 UNION ALL SELECT i + 1 FROM batch WHERE i < 501
+            )
+            INSERT INTO aliases (word, content, secret, created_at, expires_at)
+            SELECT 'retention-batch-' || i, 'x', NULL, ?, 0 FROM batch`,
+        )
+            .bind(now - MAX_MAX_AGE - DAY)
+            .run()
+
+        await runScheduledRetention()
+
+        const remaining = await env.DB.prepare(
+            'SELECT COUNT(*) AS count FROM aliases WHERE word LIKE \'retention-batch-%\'',
+        ).first<{count: number}>()
+        expect(remaining?.count).toBe(0)
     })
 })
 

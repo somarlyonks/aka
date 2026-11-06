@@ -31,7 +31,7 @@ DELETE /:word                       API delete, secret in the JSON body
 - `0` -> one-time alias
 - parsing error, malformed, or overflow -> `422`
 - maximum allowed value: `2592000` seconds (30 days)
-- already existing word -> `409`
+- word held by a live alias -> `409`; an alias past its lifetime is removed first, so its word can be claimed again
 
 A bare `?0` query is shorthand for `max-age=0`; an explicit `max-age` wins when both are given. Other bare queries are ignored.
 
@@ -43,7 +43,7 @@ A bare `?0` query is shorthand for `max-age=0`; an explicit `max-age` wins when 
 
 The free-word config page includes a `max-age` seconds input (default `604800`, maximum `2592000`, `0` for one-time). The form posts `application/x-www-form-urlencoded` fields `content`, `secret`, and `max-age`; a blank field uses the default. Reads of an existing alias ignore `max-age`; it never changes an existing alias.
 
-Especially, for one-time alias, it does not expire if never successfully visited. So we need a retention schedule prune those one-time alias created 30 days ago.
+An unconsumed one-time alias does not expire, so retention removes it 30 days after creation (see [Expiry and one-time semantics](#expiry-and-one-time-semantics)).
 
 ### Creation responses
 
@@ -68,7 +68,8 @@ GET /one-shot/some%20text?max-age=0
 
 - `content` is everything after `/:word/`, percent-decoded once; URLs containing `/` need no encoding, but a content URL's own query string must encode `?` as `%3F` and `&` as `%26`.
 - Free word -> public alias, then `303` (normal) or `201` confirmation.
-- Existing word -> `409`, checked before content and `max-age` validation.
+- Word held by a live alias -> `409`, checked before content and `max-age` validation.
+- Word whose alias is past its lifetime -> the expired alias is removed and the create continues as if the word were free.
 
 ### `GET /:word` — free word
 
@@ -126,7 +127,7 @@ POST only creates an alias and accepts `Content-Type: application/json` (returns
 - `secret` is optional; a non-empty string makes the alias private.
 - `maxAge` is optional; whole seconds only, default `604800` (7 days), maximum `2592000` (30 days), `0` one-time.
 - Success -> `201 Created` JSON body `{ "word", "url", "oneTime", "private" }` with `Location: /:word`. It never redirects.
-- Word already exists -> `409` (checked after body parsing, before field validation); invalid JSON/body -> `400`; invalid word, content, secret, or `maxAge` -> `422`. Errors are JSON in the shape `{ "error": { "code": "...", "message": "..." } }`. Secrets cannot override and cannot change the lifetime.
+- Word held by a live alias -> `409` (checked after body parsing, before field validation, and an alias past its lifetime is removed first); invalid JSON/body -> `400`; invalid word, content, secret, or `maxAge` -> `422`. Errors are JSON in the shape `{ "error": { "code": "...", "message": "..." } }`. Secrets cannot override and cannot change the lifetime.
 
 ### `DELETE /:word`
 
@@ -140,6 +141,8 @@ Delete a private alias:
 ## Expiry and one-time semantics
 
 - An alias past its lifetime -> `410 Gone` and is removed. This check runs before rendering a public resolve, a config page, or a private resolve.
+- Creation treats an expired word as free: the expired row is removed as part of the claim, so an expired word can be claimed again immediately. Validation failures never remove the expired row.
+- Expiry deletes only remove a row that is still expired, so a fresh alias created for the same word is never removed by a stale read, delete, or claim.
 - A one-time alias is consumed on its first successful view:
   - public: exactly one request receives the content
   - private: verify the secret, then consume; only the request that consumes the alias receives the content
@@ -147,6 +150,7 @@ Delete a private alias:
 - Failed auth, config page views, `HEAD`/`OPTIONS`, and error responses do not consume a one-time alias.
 - Prefetchers/crawlers can consume a public one-time alias; do not rely on one-time links for sensitive public content.
 - One-time consumption cannot be defeated by edge or browser caching.
+- A scheduled retention run executes daily. It removes aliases whose lifetime has ended even when they were never read, and one-time aliases that were never consumed once they are 30 days old. Built-in aliases (`expires_at = NULL`) are never removed.
 
 ## Cache policy
 
@@ -235,8 +239,8 @@ When creating words, naming it with `-` means let the system generate the words.
 
 ```
 src/
-  index.ts                  Hono app, middleware, root index/health, route wiring
-  types.ts                  Env bindings and AliasRow
+  index.ts                  Hono app, middleware, root index/health, route wiring, scheduled retention
+  types.ts                  Env bindings
   routes/
     pages.ts                GET /:word (config, public resolve, private resolve)
     submit.ts               GET /:word/:content, GET /-/*, POST /:word (JSON/form; `-` generates)
@@ -248,7 +252,7 @@ src/
     content-crypto.ts       AES-GCM content encryption/decryption
     html.ts                 static-template loading, escaping, placeholder rendering
     json.ts                 JSON object body parsing for API routes
-    lifetime.ts             max-age parsing, expiry, immutable TTL
+    lifetime.ts             max-age parsing, expiry, immutable TTL, retention window
     respond.ts              HTML/JSON/text/redirect responses and security/cache headers
     secrets.ts              HMAC hash and timing-safe verification
     words.ts                validation, normalization, generated-word selection
@@ -289,7 +293,7 @@ LICENSE
 ## Deployment
 
 - `wrangler.jsonc` uses the default environment for local development and a separate `prod` environment for deployment, each with its own D1 binding. `npm run dev`, the test harness, and Playwright use the default environment with a local D1 database; `npm run deploy` targets `prod`. There is no remote dev environment.
-- The `RATE_LIMITER` binding is declared in both the top level and `prod`, because `ratelimits` is not inherited by named environments. Local development and tests simulate it, so the Worker-level 429 path is covered without a remote deployment.
+- The `RATE_LIMITER` binding is declared in both the top level and `prod`, because `ratelimits` is not inherited by named environments. The daily retention Cron Trigger (`0 3 * * *`) is declared at the top level and is inherited by `prod`. Local development and tests simulate the limiter, so the Worker-level 429 path is covered without a remote deployment.
 - Secrets: `SECRET_SALT` (required, stable) via `wrangler secret put SECRET_SALT --env prod`; `.dev.vars` locally. Disable Workers Logs / request observability in the dashboard.
 - Apply migrations locally via `npm run db:migrate:local` and for production via `npm run db:migrate:prod`.
 - Each migration file contains exactly one SQL statement, so tests can execute the files directly without parsing them.

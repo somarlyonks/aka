@@ -14,6 +14,11 @@
             "/_templates/*"
         ]
     },
+    "triggers": {
+        "crons": [
+            "0 3 * * *"
+        ]
+    },
     "ratelimits": [
         {
             "name": "RATE_LIMITER",

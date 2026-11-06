@@ -1,4 +1,4 @@
-import {consumeOneTime, deleteAlias, getAlias} from '../db/repo'
+import {consumeOneTime, getAlias, reclaimExpiredAlias} from '../db/repo'
 import {prefersHtml, prefersJson} from '../lib/accept'
 import {bearerSecret} from '../lib/auth'
 import {isHttpUrl, isValidSecret} from '../lib/content'
@@ -41,7 +41,7 @@ export async function showWord (c: AppContext): Promise<Response> {
 
     const now = nowSeconds()
     if (isExpired(row.expires_at, now)) {
-        await deleteAlias(c.env.DB, word)
+        await reclaimExpiredAlias(c.env.DB, word, now)
         return errorPage(c, 410)
     }
 

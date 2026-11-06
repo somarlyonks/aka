@@ -10,6 +10,7 @@ import {
     isExpired,
     isOneTime,
     parseMaxAge,
+    retentionWindow,
 } from '../src/lib/lifetime'
 import {rateLimitKeyFor} from '../src/lib/rate-limit'
 import {hashSecret, timingSafeEqual, verifySecret} from '../src/lib/secrets'
@@ -57,6 +58,13 @@ describe('lifetime', () => {
         expect(immutableTtl(100 + 10 * 365 * 24 * 60 * 60, 100)).toBe(
             365 * 24 * 60 * 60,
         )
+    })
+
+    it('derives both retention cutoffs from a single now', () => {
+        expect(retentionWindow(1_000_000)).toEqual({
+            now: 1_000_000,
+            oneTimeCutoff: 1_000_000 - MAX_MAX_AGE,
+        })
     })
 })
 

@@ -1,4 +1,4 @@
-import {deleteAlias, getAlias} from '../db/repo'
+import {deleteAlias, getAlias, reclaimExpiredAlias} from '../db/repo'
 import {readJsonObject} from '../lib/json'
 import {isExpired, nowSeconds} from '../lib/lifetime'
 import {jsonError, NO_STORE} from '../lib/respond'
@@ -25,8 +25,9 @@ export async function removeWord (c: AppContext): Promise<Response> {
         return jsonError(c, 404, 'not_found', 'Alias not found.')
     }
 
-    if (isExpired(row.expires_at, nowSeconds())) {
-        await deleteAlias(c.env.DB, word)
+    const now = nowSeconds()
+    if (isExpired(row.expires_at, now)) {
+        await reclaimExpiredAlias(c.env.DB, word, now)
         return jsonError(c, 410, 'expired', 'Alias expired.')
     }
 
